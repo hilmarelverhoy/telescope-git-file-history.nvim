@@ -30,29 +30,80 @@ local gfh_actions = require("telescope._extensions.git_file_history.actions")
 local gfh_config = require("telescope._extensions.git_file_history.config")
 
 -- separator between commit message and file path. (no path should ever contain this string I hope)
-local SEPARATOR = "§X§Y§Z§"
+local SEPARATOR = "GXGYGZG"
+
+local cmds
+if vim.loop.os_uname().sysname == "Windows_NT" then
+    cmds ={
+        ["git_show"] = function (entry)
+            return {
+                "pwsh.exe",
+                "-c",
+                "git show " .. entry.value .. ":" .. entry.path
+            }
+        end,
+        ["git_log"] = function ()
+            return {
+                "pwsh.exe",
+                "-c",
+                "git log --follow --decorate --format='%H %ad%d %s' --date=format:'%Y-%m-%d' --name-only "
+                .. vim.fn.expand("%")
+                .. " | awk '{if (!NF) next; if (line) {print line \""
+                .. SEPARATOR
+                .. '" $0; line=""} else {line=$0}}\'',
+            }
+        end
+    }
+else
+    cmds ={
+        ["git_show"] = function (entry)
+            return {
+                "sh",
+                "-c",
+                "GIT_PAGER=cat git show " .. entry.value .. ":" .. entry.path
+            }
+        end,
+        ["git_log"] = function ()
+            return {
+                "sh",
+                "-c",
+                "git log --follow --decorate --format='%H %ad%d %s' --date=format:'%Y-%m-%d' --name-only "
+                .. vim.fn.expand("%")
+                .. " | awk '{if (!NF) next; if (line) {print line \""
+                .. SEPARATOR
+                .. '" $0; line=""} else {line=$0}}\'',
+            }
+        end
+    }
+end
 
 local function parse_entry(entry)
-    local pattern = "(.-) (.-) (.-)" .. SEPARATOR .. "(.+)"
+    local pattern = "(.-) (.-) (.+)"..SEPARATOR.."(.+)$"
     local hash, date, msg, path = entry:match(pattern)
 
+    print(pattern)
+    print(entry)
+    print(hash)
+    print(date)
+    print(msg)
+    print(path)
     if not hash or not date or not msg or not path then
         vim.notify(
-            string.format("Failed to parse entry: %s. Skipping this commit", entry),
-            vim.log.levels.ERROR
+        string.format("Failed to parse entry: %s. Skipping this commit", entry),
+        vim.log.levels.ERROR
         )
         return nil
     end
 
     if path:find(SEPARATOR) then
         vim.notify(
-            string.format(
-                "Path (%s) contains separator (%s). Full entry: %s. Skipping this commit. Please open a issue on GitHub: https://github.com/isak102/telescope-git-file-history.nvim/issues",
-                path,
-                SEPARATOR,
-                entry
-            ),
-            vim.log.levels.ERROR
+        string.format(
+        "Path (%s) contains separator (%s). Full entry: %s. Skipping this commit. Please open a issue on GitHub: https://github.com/isak102/telescope-git-file-history.nvim/issues",
+        path,
+        SEPARATOR,
+        entry
+        ),
+        vim.log.levels.ERROR
         )
         return nil
     end
@@ -117,81 +168,69 @@ local function git_file_history(opts)
     end
 
     pickers
-        .new(opts, {
-            results_title = "Commits for current file",
-            finder = finders.new_oneshot_job({
-                "sh",
-                "-c",
-                "git log --follow --decorate --format='%H %ad%d %s' --date=format:'%Y-%m-%d' --name-only "
-                    .. vim.fn.expand("%")
-                    .. " | awk '{if (!NF) next; if (line) {print line \""
-                    .. SEPARATOR
-                    .. '" $0; line=""} else {line=$0}}\'',
-            }, opts),
-            sorter = conf.file_sorter(opts),
-            attach_mappings = function(prompt_bufnr, map)
-                local function open(cmd)
-                    local selection = action_state.get_selected_entry()
-                    local hash = selection.value
+    .new(opts, {
+        results_title = "Commits for current file",
+        finder = finders.new_oneshot_job(cmds["git_log"](), opts),
+        sorter = conf.file_sorter(opts),
+        attach_mappings = function(prompt_bufnr, map)
+            local function open(cmd)
+                local selection = action_state.get_selected_entry()
+                local hash = selection.value
 
-                    actions.close(prompt_bufnr)
+                actions.close(prompt_bufnr)
 
-                    local command = cmd .. hash .. ":" .. selection.path
-                    vim.cmd(command)
+                local command = cmd .. hash .. ":" .. selection.path
+                vim.cmd(command)
+            end
+
+            action_set.select:replace(function()
+                open("Gedit ")
+            end)
+            actions.select_tab:replace(function()
+                open("Gtabedit ")
+            end)
+            actions.select_horizontal:replace(function()
+                open("Gsplit ")
+            end)
+            actions.select_vertical:replace(function()
+                open("Gvsplit ")
+            end)
+
+            for mode, tbl in pairs(gfh_config.values.mappings) do
+                for key, action in pairs(tbl) do
+                    map(mode, key, action)
                 end
+            end
 
-                action_set.select:replace(function()
-                    open("Gedit ")
-                end)
-                actions.select_tab:replace(function()
-                    open("Gtabedit ")
-                end)
-                actions.select_horizontal:replace(function()
-                    open("Gsplit ")
-                end)
-                actions.select_vertical:replace(function()
-                    open("Gvsplit ")
-                end)
-
-                for mode, tbl in pairs(gfh_config.values.mappings) do
-                    for key, action in pairs(tbl) do
-                        map(mode, key, action)
-                    end
-                end
-
-                return true
+            return true
+        end,
+        previewer = previewers.new_buffer_previewer({
+            title = "File contents at commit",
+            get_buffer_by_name = function(_, entry)
+                return entry.value .. ":" .. entry.path
             end,
-            previewer = previewers.new_buffer_previewer({
-                title = "File contents at commit",
-                get_buffer_by_name = function(_, entry)
-                    return entry.value .. ":" .. entry.path
-                end,
 
-                define_preview = function(self, entry, _)
-                    if self.state.bufname == entry.value .. ":" .. entry.path then
-                        return
-                    end
-                    local cmd = {
-                        "sh",
-                        "-c",
-                        "GIT_PAGER=cat git show " .. entry.value .. ":" .. entry.path,
-                    }
-                    local ft = pfiletype.detect(entry.path)
-                    putils.job_maker(cmd, self.state.bufnr, {
-                        value = entry.value,
-                        bufname = entry.value .. ":" .. entry.path,
-                        cwd = opts.cwd,
-                        callback = function(bufnr, content)
-                            if not content then
-                                return
-                            end
-                            require("telescope.previewers.utils").highlighter(bufnr, ft)
-                        end,
-                    })
-                end,
-            }),
-        })
-        :find()
+            define_preview = function(self, entry, _)
+                if self.state.bufname == entry.value .. ":" .. entry.path then
+                    return
+                end
+                local cmd = cmds["git_show"](entry)
+                local ft = pfiletype.detect(entry.path)
+                putils.job_maker(cmd, self.state.bufnr, {
+                    value = entry.value,
+                    bufname = entry.value .. ":" .. entry.path,
+                    cwd = opts.cwd,
+                    callback = function(bufnr, content)
+                        if not content then
+                            return
+                        end
+                        require("telescope.previewers.utils").highlighter(bufnr, ft)
+                    end,
+                })
+            end,
+        }),
+    })
+    :find()
 end
 
 return telescope.register_extension({

@@ -96,7 +96,9 @@ The `select`, `select_vertical`, `select_horizontal` and `select_tab` keymaps ar
 
 ## Windows support
 
-This plugin currently does not support Windows ([#8](https://github.com/isak102/telescope-git-file-history.nvim/issues/8))
+This plugin supports Windows, but requires awk to be installed (and be in PATH).
+
+[GnuWin provides a port of gawk (gnu awk).](https://gnuwin32.sourceforge.net/packages/gawk.htm)
 
 ## Inspiration
 
